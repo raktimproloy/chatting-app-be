@@ -24,28 +24,30 @@ router.post("/", async (req, res, next) => {
         const userId = conversation.members.find((id) => id !== req.params.userId);
         const user = await User.findById(userId); 
         
-        // Get the last message for this conversation
-        const lastMessage = await Messages.findOne({conversationId: conversation._id})
-          .sort({createdAt: -1})
-          .limit(1);
-        
         // Get first 15 characters of the last message
-        const lastMessageText = lastMessage ? 
-          (lastMessage.message.length > 15 ? 
-            lastMessage.message.substring(0, 15) + '...' : 
-            lastMessage.message) : 
+        const lastMessageText = conversation.lastMessage ? 
+          (conversation.lastMessage.length > 15 ? 
+            conversation.lastMessage.substring(0, 15) + '...' : 
+            conversation.lastMessage) : 
           'No messages yet';
         
         // Determine if the last message was sent by the current user
-        const isLastMessageFromCurrentUser = lastMessage ? lastMessage.senderId === req.params.userId : false;
+        const isLastMessageFromCurrentUser = conversation.lastMessageSenderId === req.params.userId;
+        
+        // Check if current user has seen this conversation
+        const userNotSeenEntry = conversation.notSeenBy.find(entry => entry.userId === req.params.userId);
+        const hasSeen = !userNotSeenEntry || 
+          (conversation.lastMessageTime && userNotSeenEntry.lastSeenAt < conversation.lastMessageTime);
         
         return{
           user:{phone: user.phone, fullname: user.fullname, _id: user._id}, 
           conversationId: conversation._id,
           lastMessage: lastMessageText,
-          lastMessageTime: lastMessage ? lastMessage.createdAt : null,
-          lastMessageSenderId: lastMessage ? lastMessage.senderId : null,
-          isLastMessageFromCurrentUser: isLastMessageFromCurrentUser
+          lastMessageTime: conversation.lastMessageTime,
+          lastMessageSenderId: conversation.lastMessageSenderId,
+          isLastMessageFromCurrentUser: isLastMessageFromCurrentUser,
+          hasSeen: hasSeen,
+          notSeenBy: conversation.notSeenBy
         }; 
       }));
       res.status(200).json(conversationUserData);

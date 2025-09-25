@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const bodyParser = require('body-parser');
 const connectDB = require('./config/database');
 const routes = require('./routes');
 const User = require('./models/User');
@@ -19,10 +20,16 @@ const io = socketIo(server, {
   }
 });
 
+app.use(bodyParser.json());
 
 
 // Socket.io connection handling
 const users = [];
+
+const phoneToSocketId = new Map();
+const socketToPhone = new Map();
+
+
 io.on('connection', (socket) => {
   
   socket.on('joinUser', (userId) => {
@@ -43,7 +50,6 @@ io.on('connection', (socket) => {
     console.log("Users online:", users);
     io.emit("getUsers", users);
   });
-
 
   socket.on("sendMessage", async({senderId, receiverId, message, conversationId}) => {
     const receiver = users.find((user) => user.id === receiverId)
@@ -70,7 +76,29 @@ io.on('connection', (socket) => {
     }
   })
 
+  socket.on("join-room", data => {
+    const {roomId, phoneId} = data;
+    console.log("Join Room", {roomId, phoneId})
+    phoneToSocketId.set(phoneId, socket.id);
+    socketToPhone.set(socket.id, phoneId);
+    socket.join(roomId);
+    socket.emit("joined-room", {roomId})
+    socket.broadcast.to(roomId).emit("user-joined", {phoneId})
+  })
 
+  socket.on("call-user", (data) => {
+    const {phoneId, offer} = data;
+    const fromPhone = socketToPhone.get(socket.id);
+    const socketId = phoneToSocketId.get(phoneId);
+    socket.to(socketId).emit("incomming-call", {from: fromPhone, offer})
+  })
+
+  socket.on("call-accepted", (data) => {
+    const {phoneId, answer} = data;
+    const socketId = phoneToSocketId.get(phoneId);
+    console.log("Answer SocketId", socketId)
+    socket.to(socketId).emit("call-accepted", {answer})
+  })
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
@@ -86,6 +114,7 @@ io.on('connection', (socket) => {
     console.log("Users remaining:", users);
     io.emit("getUsers", users);
   });
+
 });
 
 

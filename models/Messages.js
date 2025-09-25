@@ -10,14 +10,6 @@ const messageSchema = new mongoose.Schema({
     message: {
         type: String,
     },
-    seen: {
-        type: Boolean,
-        default: false,
-    },
-    seenAt: {
-        type: Date,
-        default: null,
-    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', messageSchema);

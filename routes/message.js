@@ -13,7 +13,13 @@ router.post('/', async (req, res, next) => {
         return res.status(400).json({message: "Please provide senderId and message"});
       }
       if(!conversationId && receiverId){
-        const newConversation = new Conversations({members: [senderId, receiverId]});
+        const newConversation = new Conversations({
+          members: [senderId, receiverId],
+          lastMessage: message,
+          lastMessageTime: new Date(),
+          lastMessageSenderId: senderId,
+          notSeenBy: [{ userId: receiverId, lastSeenAt: new Date(0) }] // Receiver hasn't seen it yet
+        });
         const savedConversation = await newConversation.save();
         const newMessage = new Messages({conversationId: savedConversation._id, senderId, message});
         await newMessage.save();
@@ -21,6 +27,28 @@ router.post('/', async (req, res, next) => {
       } else if(conversationId) {
         const newMessage = new Messages({conversationId, senderId, message});
         const savedMessage = await newMessage.save();
+        
+        // Update conversation with new message info
+        const conversation = await Conversations.findById(conversationId);
+        if (conversation) {
+          // Add receiver to notSeenBy if they haven't seen the latest message
+          const receiverId = conversation.members.find(id => id !== senderId);
+          const existingNotSeenEntry = conversation.notSeenBy.find(entry => entry.userId === receiverId);
+          
+          if (existingNotSeenEntry) {
+            // Update existing entry
+            existingNotSeenEntry.lastSeenAt = new Date(0); // Mark as not seen
+          } else {
+            // Add new entry
+            conversation.notSeenBy.push({ userId: receiverId, lastSeenAt: new Date(0) });
+          }
+          
+          conversation.lastMessage = message;
+          conversation.lastMessageTime = new Date();
+          conversation.lastMessageSenderId = senderId;
+          await conversation.save();
+        }
+        
         res.status(201).json(savedMessage);
       } else {
         return res.status(400).json({message: "Please provide conversationId or receiverId"});
@@ -43,8 +71,6 @@ router.post('/', async (req, res, next) => {
           user: {phone: user.phone, fullname: user.fullname, _id: user._id}, 
           message: message.message, 
           createdAt: message.createdAt,
-          seen: message.seen,
-          seenAt: message.seenAt,
           _id: message._id
         };
       }));
@@ -54,7 +80,7 @@ router.post('/', async (req, res, next) => {
     }
   });
 
-// Mark messages as seen
+// Mark conversation as seen
 router.put('/seen/:conversationId', async (req, res, next) => {
   try {
     const { conversationId } = req.params;
@@ -64,21 +90,26 @@ router.put('/seen/:conversationId', async (req, res, next) => {
       return res.status(400).json({ message: "userId is required" });
     }
     
-    // Mark all messages in this conversation as seen for the receiver
-    const result = await Messages.updateMany(
-      { 
-        conversationId: conversationId,
-        senderId: { $ne: userId } // Don't mark sender's own messages as seen
-      },
-      { 
-        seen: true, 
-        seenAt: new Date() 
-      }
-    );
+    // Update conversation to mark as seen by user
+    const conversation = await Conversations.findById(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+    
+    // Remove user from notSeenBy array or update their lastSeenAt
+    const userIndex = conversation.notSeenBy.findIndex(entry => entry.userId === userId);
+    if (userIndex !== -1) {
+      conversation.notSeenBy[userIndex].lastSeenAt = new Date();
+    } else {
+      // Add user to notSeenBy with current time (they've seen it)
+      conversation.notSeenBy.push({ userId, lastSeenAt: new Date() });
+    }
+    
+    await conversation.save();
     
     res.status(200).json({ 
-      message: "Messages marked as seen", 
-      updatedCount: result.modifiedCount 
+      message: "Conversation marked as seen", 
+      conversationId: conversationId 
     });
   } catch (err) {
     next(err);
