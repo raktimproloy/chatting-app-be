@@ -97,7 +97,7 @@ io.on('connection', (socket) => {
     socketToPhone.set(socket.id, phoneId);
     socket.join(roomId);
     socket.emit("joined-room", {roomId})
-    socket.broadcast.to(roomId).emit("user-joined", {phoneId})
+    socket.broadcast.to(roomId).emit("user-joined", {userId: phoneId})
   })
 
   socket.on("call-user", (data) => {
