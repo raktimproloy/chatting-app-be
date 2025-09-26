@@ -76,6 +76,20 @@ io.on('connection', (socket) => {
     }
   })
 
+  socket.on("requestingVideoCall", (data) => {
+    const {senderId, receiverId, conversationId, roomId} = data;
+    console.log("Requesting Video Call", {senderId, receiverId, conversationId, roomId})
+    
+    // Find the receiver's socket ID from the users array
+    const receiver = users.find((user) => user.id === receiverId);
+    if (receiver) {
+      console.log(`Emitting video call request to receiver: ${receiverId} with socketId: ${receiver.socketId}`);
+      io.to(receiver.socketId).emit("requestingForAcceptingVideoCall", {senderId, receiverId, conversationId, roomId});
+    } else {
+      console.log(`Receiver ${receiverId} not found in online users`);
+    }
+  })
+
   socket.on("join-room", data => {
     const {roomId, phoneId} = data;
     console.log("Join Room", {roomId, phoneId})
