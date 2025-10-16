@@ -133,10 +133,6 @@ io.on('connection', (socket) => {
 
 
 
-
-
-
-
 // Connect to MongoDB
 connectDB();
 
