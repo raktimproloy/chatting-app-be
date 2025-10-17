@@ -7,8 +7,6 @@ const bodyParser = require('body-parser');
 const connectDB = require('./config/database');
 const routes = require('./routes');
 const User = require('./models/User');
-// const Message = require('./models/Messages');
-// const Conversation = require('./models/Conversation');
 
 // Initialize Express app
 const app = express();
@@ -22,27 +20,22 @@ const io = socketIo(server, {
 
 app.use(bodyParser.json());
 
-
 // Socket.io connection handling
 const users = [];
-
 const phoneToSocketId = new Map();
 const socketToPhone = new Map();
-
+const usersByName = new Map(); // compatibility with sample app username-based signaling
 
 io.on('connection', (socket) => {
   
   socket.on('joinUser', (userId) => {
     console.log(`joinUser event received: userId=${userId}, socketId=${socket.id}`);
     
-    // Check if user already exists and update their socket ID, or add new user
     const existingUserIndex = users.findIndex(user => user.id === userId);
     if (existingUserIndex !== -1) {
-      // Update existing user's socket ID (user reconnected)
       users[existingUserIndex].socketId = socket.id;
       console.log(`User ${userId} reconnected with new socket ID: ${socket.id}`);
     } else {
-      // Add new user
       users.push({id: userId, socketId: socket.id});
       console.log(`New user ${userId} joined with socket ID: ${socket.id}`);
     }
@@ -51,13 +44,25 @@ io.on('connection', (socket) => {
     io.emit("getUsers", users);
   });
 
+  // compatibility: username based join and broadcast joined list
+  socket.on('join-user', (username) => {
+    console.log(`${username} joined via join-user`);
+    usersByName.set(username, socket.id);
+    // broadcast list as object similar to sample
+    const allusers = {};
+    for (const [name, id] of usersByName.entries()) {
+      allusers[name] = { username: name, id };
+    }
+    io.emit('joined', allusers);
+  });
+
   socket.on("sendMessage", async({senderId, receiverId, message, conversationId}) => {
-    const receiver = users.find((user) => user.id === receiverId)
-    const sender = users.find((user) => user.id === senderId)
-    const user = await User.findById(senderId)
+    const receiver = users.find((user) => user.id === receiverId);
+    const sender = users.find((user) => user.id === senderId);
+    const user = await User.findById(senderId);
     console.log("Send Message", {
       senderId, receiverId, message, conversationId, sender, receiver
-    })
+    });
 
     const messageData = {
       senderId, 
@@ -65,22 +70,20 @@ io.on('connection', (socket) => {
       conversationId, 
       receiverId,
       user: {phone: user.phone, fullname: user.fullname, _id: user._id}
-    }
+    };
 
-    // Only emit to receiver (sender already sees their message immediately in UI)
     if(receiver){
       console.log(`Emitting message to receiver: ${receiver.id} with socketId: ${receiver.socketId}`);
       io.to(receiver.socketId).emit("getMessage", messageData);
     } else {
       console.log(`Receiver ${receiverId} not found in online users`);
     }
-  })
+  });
 
   socket.on("requestingVideoCall", (data) => {
     const {senderId, receiverId, conversationId, roomId} = data;
-    console.log("Requesting Video Call", {senderId, receiverId, conversationId, roomId})
+    console.log("Requesting Video Call", {senderId, receiverId, conversationId, roomId});
     
-    // Find the receiver's socket ID from the users array
     const receiver = users.find((user) => user.id === receiverId);
     if (receiver) {
       console.log(`Emitting video call request to receiver: ${receiverId} with socketId: ${receiver.socketId}`);
@@ -88,36 +91,113 @@ io.on('connection', (socket) => {
     } else {
       console.log(`Receiver ${receiverId} not found in online users`);
     }
-  })
+  });
 
   socket.on("join-room", data => {
     const {roomId, phoneId} = data;
-    console.log("Join Room", {roomId, phoneId})
+    console.log("Join Room", {roomId, phoneId, socketId: socket.id});
+    
     phoneToSocketId.set(phoneId, socket.id);
     socketToPhone.set(socket.id, phoneId);
     socket.join(roomId);
-    socket.emit("joined-room", {roomId})
-    socket.broadcast.to(roomId).emit("user-joined", {userId: phoneId})
-  })
+    
+    socket.emit("joined-room", {roomId});
+    socket.broadcast.to(roomId).emit("user-joined", {userId: phoneId});
+    
+    console.log(`User ${phoneId} joined room ${roomId}`);
+  });
 
   socket.on("call-user", (data) => {
     const {phoneId, offer} = data;
     const fromPhone = socketToPhone.get(socket.id);
     const socketId = phoneToSocketId.get(phoneId);
-    socket.to(socketId).emit("incomming-call", {from: fromPhone, offer})
-  })
+    
+    console.log("Call User", {fromPhone, toPhone: phoneId, socketId});
+    
+    if (socketId) {
+      io.to(socketId).emit("incomming-call", {from: fromPhone, offer});
+    } else {
+      console.log(`Socket ID not found for phone: ${phoneId}`);
+    }
+  });
 
   socket.on("call-accepted", (data) => {
     const {phoneId, answer} = data;
     const socketId = phoneToSocketId.get(phoneId);
-    console.log("Answer SocketId", socketId)
-    socket.to(socketId).emit("call-accepted", {answer})
-  })
+    
+    console.log("Call Accepted", {toPhone: phoneId, socketId, hasAnswer: !!answer});
+    
+    if (socketId) {
+      io.to(socketId).emit("call-accepted", {answer});
+    } else {
+      console.log(`Socket ID not found for phone: ${phoneId}`);
+    }
+  });
+
+  // compatibility: offer/answer style signaling
+  socket.on('offer', ({ from, to, offer }) => {
+    console.log('offer', { from, to });
+    const toSocketId = phoneToSocketId.get(to) || usersByName.get(to);
+    if (toSocketId) {
+      io.to(toSocketId).emit('offer', { from, to, offer });
+    }
+  });
+
+  socket.on('answer', ({ from, to, answer }) => {
+    console.log('answer', { from, to });
+    const toSocketId = phoneToSocketId.get(from) || usersByName.get(from);
+    if (toSocketId) {
+      io.to(toSocketId).emit('answer', { from, to, answer });
+    }
+  });
+
+  // Relay ICE candidates between peers
+  socket.on("ice-candidate", (data) => {
+    const { toPhoneId, candidate } = data;
+    const toSocketId = phoneToSocketId.get(toPhoneId);
+    const fromPhone = socketToPhone.get(socket.id);
+    console.log("ICE Candidate", { fromPhone, toPhoneId, hasCandidate: !!candidate, toSocketId });
+    if (toSocketId) {
+      io.to(toSocketId).emit("ice-candidate", { from: fromPhone, candidate });
+    } else {
+      console.log(`Socket ID not found for phone: ${toPhoneId}`);
+    }
+  });
+
+  // compatibility: icecandidate event name
+  socket.on('icecandidate', ({ from, to, candidate }) => {
+    console.log('icecandidate', { from, to });
+    const toSocketId = phoneToSocketId.get(to) || usersByName.get(to);
+    if (toSocketId) {
+      io.to(toSocketId).emit('icecandidate', { from, to, candidate });
+    } else {
+      // fallback: broadcast
+      socket.broadcast.emit('icecandidate', { from, to, candidate });
+    }
+  });
+
+  socket.on("call-ended", (data) => {
+    const {phoneId} = data;
+    const socketId = phoneToSocketId.get(phoneId);
+    
+    console.log("Call Ended", {phoneId, socketId});
+    
+    if (socketId) {
+      io.to(socketId).emit("call-ended");
+    }
+  });
+
+  // compatibility: end-call event name
+  socket.on('end-call', ({ from, to }) => {
+    const toSocketId = phoneToSocketId.get(to) || usersByName.get(to);
+    if (toSocketId) {
+      io.to(toSocketId).emit('end-call', { from, to });
+    }
+  });
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
     
-    // Remove user from the list
     const userIndex = users.findIndex(user => user.socketId === socket.id);
     if (userIndex !== -1) {
       const disconnectedUser = users[userIndex];
@@ -125,13 +205,17 @@ io.on('connection', (socket) => {
       console.log(`User ${disconnectedUser.id} disconnected`);
     }
     
+    // Clean up maps
+    const phoneId = socketToPhone.get(socket.id);
+    if (phoneId) {
+      phoneToSocketId.delete(phoneId);
+      socketToPhone.delete(socket.id);
+    }
+    
     console.log("Users remaining:", users);
     io.emit("getUsers", users);
   });
-
 });
-
-
 
 // Connect to MongoDB
 connectDB();
@@ -146,7 +230,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes
 app.use('/api', routes);
-
 
 // Error handling middleware
 app.use((err, req, res, next) => {
